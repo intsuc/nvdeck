@@ -137,3 +137,9 @@ Before writing, keeping, or recommending a test, apply these gates in order:
    easier to detect.
 
 Only write or retain a dynamic test when the candidate passes all three gates.
+
+## Project Workflow
+
+- Use Deno 2.9 or newer for dependency management and project tasks.
+- Run `deno install` after dependency changes.
+- Use `deno task dev`, `deno task check`, and `deno task compile` for development, validation, and executable builds.

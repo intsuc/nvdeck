@@ -1,0 +1,42 @@
+{
+  "$schema": "https://deno.land/x/deno/cli/schemas/config-file.v1.json",
+  "tasks": {
+    "dev": "deno run -A npm:vite dev --port 3000",
+    "build": "deno run -A scripts/build.ts",
+    "start": "deno task --config .output/deno.json start",
+    "preview": "deno run -A npm:vite preview",
+    "compile": "deno compile -A --frozen --output dist/nvdeck .",
+    "lint": "deno lint",
+    "fmt": "deno fmt",
+    "fmt:check": "deno fmt --check",
+    "typecheck": "deno check scripts/build.ts src/router.tsx vite.config.ts",
+    "check": "deno task fmt:check && deno task lint && deno task typecheck"
+  },
+  "fmt": {
+    "include": [
+      "scripts/",
+      "src/",
+      "components.json",
+      "deno.json",
+      "package.json",
+      "tsconfig.json",
+      "vite.config.ts"
+    ],
+    "exclude": ["src/routeTree.gen.ts"],
+    "semiColons": false
+  },
+  "lint": {
+    "include": ["scripts/", "src/", "vite.config.ts"],
+    "exclude": ["src/routeTree.gen.ts"],
+    "rules": {
+      "exclude": ["no-sloppy-imports"]
+    }
+  },
+  "exclude": [
+    ".agents",
+    ".output",
+    "dist",
+    "node_modules",
+    "src/routeTree.gen.ts"
+  ]
+}

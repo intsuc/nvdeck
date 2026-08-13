@@ -1,0 +1,16 @@
+# Dependencies
+/node_modules/
+
+# Build artifacts
+/.output/
+/.tanstack/
+/dist/
+
+# Local configuration
+.env
+.env.*
+!.env.example
+*.local
+
+# Tooling
+*.tsbuildinfo
