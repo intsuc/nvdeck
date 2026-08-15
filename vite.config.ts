@@ -12,7 +12,7 @@ const config = defineConfig({
     devtools(),
     tailwindcss(),
     tanstackStart({ spa: { enabled: true } }),
-    nitro({ preset: "deno-server" }),
+    nitro({ preset: "deno-server", serveStatic: "inline" }),
     viteReact(),
     babel({ presets: [reactCompilerPreset()] }),
   ],
