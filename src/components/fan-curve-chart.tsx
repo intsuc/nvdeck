@@ -7,13 +7,14 @@ import {
 import {
   CartesianGrid,
   ComposedChart,
+  DefaultZIndexes,
   Line,
-  ReferenceLine,
   useCartesianScale,
   usePlotArea,
   useYAxisInverseScale,
   XAxis,
   YAxis,
+  ZIndexLayer,
 } from "recharts"
 
 import { type ChartConfig, ChartContainer } from "@/components/ui/chart"
@@ -39,31 +40,21 @@ type FanCurveChartProps = {
 
 type CurveControlPointProps = {
   point: FanCurvePoint
-  active: boolean
   disabled: boolean
   locked: boolean
   minimum: number
   maximum: number
-  onDragStart: () => void
   onDrag: (fanSpeed: number) => void
-  onDragFinish: () => void
-  onFocus: () => void
-  onBlur: () => void
   onKeyboardChange: (fanSpeed: number) => void
 }
 
 function CurveControlPoint({
   point,
-  active,
   disabled,
   locked,
   minimum,
   maximum,
-  onDragStart,
   onDrag,
-  onDragFinish,
-  onFocus,
-  onBlur,
   onKeyboardChange,
 }: CurveControlPointProps) {
   const coordinate = useCartesianScale({
@@ -72,6 +63,7 @@ function CurveControlPoint({
   })
   const inverseYScale = useYAxisInverseScale()
   const activePointer = useRef<number | null>(null)
+  const [isHovered, setIsHovered] = useState(false)
 
   if (!coordinate) {
     return null
@@ -154,87 +146,88 @@ function CurveControlPoint({
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId)
     }
-    onDragFinish()
   }
 
   return (
-    <g>
-      {active && !interactionDisabled
+    <>
+      {isHovered
         ? (
-          <g pointerEvents="none">
-            <rect
-              x={labelX}
-              y={labelY}
-              width={labelWidth}
-              height={22}
-              fill="var(--background)"
-              stroke="var(--color-curve)"
-            />
-            <text
-              x={cx}
-              y={labelY + 15}
-              textAnchor="middle"
-              fill="var(--foreground)"
-              fontSize={11}
-            >
-              {point.temperature} °C / {point.fanSpeed}%
-            </text>
-          </g>
+          <ZIndexLayer zIndex={DefaultZIndexes.label}>
+            <g pointerEvents="none" aria-hidden="true">
+              <rect
+                x={labelX}
+                y={labelY}
+                width={labelWidth}
+                height={22}
+                fill="var(--background)"
+                stroke="var(--color-curve)"
+              />
+              <text
+                x={cx}
+                y={labelY + 15}
+                textAnchor="middle"
+                fill="var(--foreground)"
+                fontSize={11}
+              >
+                {point.temperature} °C / {point.fanSpeed}%
+              </text>
+            </g>
+          </ZIndexLayer>
         )
         : null}
-      <rect
-        x={cx - 14}
-        y={cy - 14}
-        width={28}
-        height={28}
-        fill="transparent"
-        role="slider"
-        tabIndex={interactionDisabled ? -1 : 0}
-        aria-label={`Fan speed at ${point.temperature} °C`}
-        aria-orientation="vertical"
-        aria-valuemin={minimum}
-        aria-valuemax={maximum}
-        aria-valuenow={point.fanSpeed}
-        aria-valuetext={`${point.fanSpeed}% at ${point.temperature} °C`}
-        aria-disabled={interactionDisabled}
-        style={{
-          cursor: interactionDisabled ? "default" : "ns-resize",
-          touchAction: interactionDisabled ? "auto" : "none",
-        }}
-        onPointerDown={(event: ReactPointerEvent<SVGRectElement>) => {
-          if (interactionDisabled || event.button !== 0) {
-            return
-          }
-          event.preventDefault()
-          event.stopPropagation()
-          activePointer.current = event.pointerId
-          event.currentTarget.setPointerCapture(event.pointerId)
-          onDragStart()
-        }}
-        onPointerMove={handlePointerMove}
-        onPointerUp={finishPointer}
-        onPointerCancel={finishPointer}
-        onLostPointerCapture={() => {
-          if (activePointer.current !== null) {
-            activePointer.current = null
-            onDragFinish()
-          }
-        }}
-        onKeyDown={handleKeyDown}
-        onFocus={onFocus}
-        onBlur={onBlur}
-      />
-      <rect
-        x={cx - 5}
-        y={cy - 5}
-        width={10}
-        height={10}
-        fill={locked ? "var(--color-curve)" : "var(--background)"}
-        stroke="var(--color-curve)"
-        strokeWidth={2}
-        pointerEvents="none"
-      />
-    </g>
+      <ZIndexLayer zIndex={DefaultZIndexes.scatter}>
+        <g>
+          <rect
+            x={cx - 14}
+            y={cy - 14}
+            width={28}
+            height={28}
+            fill="transparent"
+            role="slider"
+            tabIndex={interactionDisabled ? -1 : 0}
+            aria-label={`Fan speed at ${point.temperature} °C`}
+            aria-orientation="vertical"
+            aria-valuemin={minimum}
+            aria-valuemax={maximum}
+            aria-valuenow={point.fanSpeed}
+            aria-valuetext={`${point.fanSpeed}% at ${point.temperature} °C`}
+            aria-disabled={interactionDisabled}
+            style={{
+              cursor: interactionDisabled ? "default" : "ns-resize",
+              touchAction: interactionDisabled ? "auto" : "none",
+            }}
+            onPointerDown={(event: ReactPointerEvent<SVGRectElement>) => {
+              if (interactionDisabled || event.button !== 0) {
+                return
+              }
+              event.preventDefault()
+              event.stopPropagation()
+              activePointer.current = event.pointerId
+              event.currentTarget.setPointerCapture(event.pointerId)
+            }}
+            onPointerMove={handlePointerMove}
+            onPointerUp={finishPointer}
+            onPointerCancel={finishPointer}
+            onLostPointerCapture={() => {
+              activePointer.current = null
+            }}
+            onPointerEnter={() => setIsHovered(true)}
+            onPointerLeave={() => setIsHovered(false)}
+            onKeyDown={handleKeyDown}
+          />
+          <rect
+            x={cx - 5}
+            y={cy - 5}
+            width={10}
+            height={10}
+            fill={locked ? "var(--color-curve)" : "var(--background)"}
+            stroke="var(--color-curve)"
+            strokeWidth={2}
+            pointerEvents="none"
+          />
+        </g>
+      </ZIndexLayer>
+    </>
   )
 }
 
@@ -247,6 +240,7 @@ function CurrentReading({
 }) {
   const coordinate = useCartesianScale({ x: temperature, y: fanSpeed })
   const plotArea = usePlotArea()
+  const [isHovered, setIsHovered] = useState(false)
 
   if (!coordinate || !plotArea) {
     return null
@@ -254,42 +248,111 @@ function CurrentReading({
 
   const labelWidth = 150
   const labelHeight = 24
-  const labelX = Math.min(
+  const absoluteLabelX = Math.min(
     Math.max(coordinate.x + 10, plotArea.x),
     plotArea.x + plotArea.width - labelWidth,
   )
-  const labelY = coordinate.y - labelHeight - 10 < plotArea.y
+  const absoluteLabelY = coordinate.y - labelHeight - 10 < plotArea.y
     ? coordinate.y + 10
     : coordinate.y - labelHeight - 10
+  const labelX = absoluteLabelX - coordinate.x
+  const labelY = absoluteLabelY - coordinate.y
+  const movementClassName =
+    "transition-transform duration-500 ease-out motion-reduce:transition-none"
 
   return (
-    <g pointerEvents="none">
-      <rect
-        x={coordinate.x - 5}
-        y={coordinate.y - 5}
-        width={10}
-        height={10}
-        fill="var(--color-current)"
-        stroke="var(--background)"
-        strokeWidth={2}
-      />
-      <rect
-        x={labelX}
-        y={labelY}
-        width={labelWidth}
-        height={labelHeight}
-        fill="var(--background)"
-        stroke="var(--color-current)"
-      />
-      <text
-        x={labelX + 8}
-        y={labelY + 16}
-        fill="var(--foreground)"
-        fontSize={11}
-      >
-        Current: {temperature} °C / {fanSpeed}%
-      </text>
-    </g>
+    <>
+      <ZIndexLayer zIndex={DefaultZIndexes.scatter}>
+        <g
+          aria-hidden="true"
+          pointerEvents="none"
+          className={movementClassName}
+          style={{ transform: `translateX(${coordinate.x}px)` }}
+        >
+          <line
+            x1={0}
+            x2={0}
+            y1={plotArea.y}
+            y2={plotArea.y + plotArea.height}
+            stroke="var(--color-current)"
+            strokeDasharray="3 3"
+          />
+        </g>
+        <g
+          aria-hidden="true"
+          pointerEvents="none"
+          className={movementClassName}
+          style={{ transform: `translateY(${coordinate.y}px)` }}
+        >
+          <line
+            x1={plotArea.x}
+            x2={plotArea.x + plotArea.width}
+            y1={0}
+            y2={0}
+            stroke="var(--color-current)"
+            strokeDasharray="3 3"
+          />
+        </g>
+        <g
+          aria-hidden="true"
+          className={movementClassName}
+          style={{
+            transform: `translate(${coordinate.x}px, ${coordinate.y}px)`,
+          }}
+        >
+          <rect
+            x={-14}
+            y={-14}
+            width={28}
+            height={28}
+            fill="transparent"
+            onPointerEnter={() => setIsHovered(true)}
+            onPointerLeave={() => setIsHovered(false)}
+          />
+          <rect
+            x={-5}
+            y={-5}
+            width={10}
+            height={10}
+            fill="var(--color-current)"
+            stroke="var(--background)"
+            strokeWidth={2}
+            pointerEvents="none"
+          />
+        </g>
+      </ZIndexLayer>
+      {isHovered
+        ? (
+          <ZIndexLayer zIndex={DefaultZIndexes.label}>
+            <g
+              aria-hidden="true"
+              pointerEvents="none"
+              className={movementClassName}
+              style={{
+                transform: `translate(${coordinate.x}px, ${coordinate.y}px)`,
+              }}
+            >
+              <rect
+                x={labelX}
+                y={labelY}
+                width={labelWidth}
+                height={labelHeight}
+                fill="var(--background)"
+                stroke="var(--color-current)"
+              />
+              <text
+                x={labelX + 8}
+                y={labelY + 16}
+                fill="var(--foreground)"
+                fontSize={11}
+              >
+                Current: {temperature} °C / {fanSpeed}%
+              </text>
+            </g>
+          </ZIndexLayer>
+        )
+        : null}
+    </>
   )
 }
 
@@ -299,9 +362,6 @@ export function FanCurveChart({
   disabled,
   onCurveChange,
 }: FanCurveChartProps) {
-  const [dragIndex, setDragIndex] = useState<number | null>(null)
-  const [focusedIndex, setFocusedIndex] = useState<number | null>(null)
-
   const fanMin = snapshot?.fanMin ?? curve[0]?.fanSpeed ?? 0
   const fanMax = snapshot?.fanMax ?? curve.at(-1)?.fanSpeed ?? 100
   const currentTemperature = snapshot?.temperature
@@ -392,22 +452,6 @@ export function FanCurveChart({
             fill: "var(--muted-foreground)",
           }}
         />
-        {snapshot
-          ? (
-            <>
-              <ReferenceLine
-                x={snapshot.temperature}
-                stroke="var(--color-current)"
-                strokeDasharray="3 3"
-              />
-              <ReferenceLine
-                y={snapshot.fanSpeed}
-                stroke="var(--color-current)"
-                strokeDasharray="3 3"
-              />
-            </>
-          )
-          : null}
         <Line
           type="linear"
           dataKey="fanSpeed"
@@ -418,28 +462,6 @@ export function FanCurveChart({
           activeDot={false}
           dot={false}
         />
-        {curve.map((point, index) => {
-          const nextPoint = curve[index + 1]
-          const previousPoint = curve[index - 1]
-
-          return (
-            <CurveControlPoint
-              key={point.temperature}
-              point={point}
-              active={dragIndex === index || focusedIndex === index}
-              disabled={disabled}
-              locked={!nextPoint}
-              minimum={previousPoint?.fanSpeed ?? fanMin}
-              maximum={nextPoint?.fanSpeed ?? fanMax}
-              onDragStart={() => setDragIndex(index)}
-              onDrag={(fanSpeed) => updatePoint(index, fanSpeed)}
-              onDragFinish={() => setDragIndex(null)}
-              onFocus={() => setFocusedIndex(index)}
-              onBlur={() => setFocusedIndex(null)}
-              onKeyboardChange={(fanSpeed) => updatePoint(index, fanSpeed)}
-            />
-          )
-        })}
         {snapshot
           ? (
             <CurrentReading
@@ -448,6 +470,23 @@ export function FanCurveChart({
             />
           )
           : null}
+        {curve.map((point, index) => {
+          const nextPoint = curve[index + 1]
+          const previousPoint = curve[index - 1]
+
+          return (
+            <CurveControlPoint
+              key={point.temperature}
+              point={point}
+              disabled={disabled}
+              locked={!nextPoint}
+              minimum={previousPoint?.fanSpeed ?? fanMin}
+              maximum={nextPoint?.fanSpeed ?? fanMax}
+              onDrag={(fanSpeed) => updatePoint(index, fanSpeed)}
+              onKeyboardChange={(fanSpeed) => updatePoint(index, fanSpeed)}
+            />
+          )
+        })}
       </ComposedChart>
     </ChartContainer>
   )
