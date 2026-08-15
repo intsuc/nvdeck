@@ -6,7 +6,7 @@
     "build": "deno run -A scripts/build.ts",
     "start": "NITRO_HOST=127.0.0.1 deno task --config .output/deno.json start",
     "preview": "deno run -A npm:vite preview",
-    "compile": "deno task build && deno compile --allow-env --allow-net --allow-ffi --frozen --output dist/nvdeck scripts/serve.ts",
+    "compile": "deno task build && deno compile --app-name nvdeck --allow-env --allow-net --allow-ffi --frozen --output dist/nvdeck scripts/serve.ts",
     "lint": "deno lint",
     "fmt": "deno fmt",
     "fmt:check": "deno fmt --check",

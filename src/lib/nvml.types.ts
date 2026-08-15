@@ -20,6 +20,7 @@ export type NvmlReadySnapshot = {
   mode: FanControlMode
   targetFanSpeed: number | null
   controlError: string | null
+  storageError: string | null
   sampledAt: number
 }
 

@@ -28,6 +28,14 @@ SIGINT and SIGTERM also trigger restoration before exit. SIGKILL and power loss
 cannot run cleanup; on the next start, the dashboard detects a remaining manual
 fan policy and requires an explicit return to automatic control.
 
+After a curve is applied successfully, the server attempts to save it in Deno's
+`localStorage`; a dashboard warning reports any persistence failure. The saved
+curve is restored in the chart after a restart, but it is never applied to the
+fans automatically; fan control starts only after selecting **Apply curve**.
+**Restore automatic control** does not delete the saved curve. Development,
+generated-server, and compiled-executable runs use separate Deno storage
+namespaces.
+
 ## Validation and executable build
 
 ```sh

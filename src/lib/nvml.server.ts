@@ -4,6 +4,11 @@ import "@tanstack/react-start/server-only"
 import process from "node:process"
 
 import {
+  type FanCurveStorageIdentity,
+  loadPersistedFanCurve,
+  savePersistedFanCurve,
+} from "./fan-curve-storage.server"
+import {
   createDefaultFanCurve,
   FAN_CURVE_TEMPERATURES,
   type FanControlMode,
@@ -111,6 +116,7 @@ class NvmlController {
   #mode: FanControlMode
   #lastTarget: number | null = null
   #controlError: string | null = null
+  #storageError: string | null = null
   #timer: ReturnType<typeof setInterval> | null = null
   #manualFans = new Set<number>()
   #closed = false
@@ -230,7 +236,7 @@ class NvmlController {
         "nvmlDeviceGetMinMaxFanSpeed",
       )
 
-      return new NvmlController(
+      const controller = new NvmlController(
         library,
         device,
         decodeCString(nameBuffer),
@@ -239,6 +245,8 @@ class NvmlController {
         fanMax[0],
         manualFans,
       )
+      controller.#loadPersistedCurve()
+      return controller
     } catch (error) {
       if (initialized) {
         library.symbols.nvmlShutdown()
@@ -269,6 +277,7 @@ class NvmlController {
         mode: this.#mode,
         targetFanSpeed,
         controlError: this.#controlError,
+        storageError: this.#storageError,
         sampledAt: Date.now(),
       }
     } catch (error) {
@@ -299,7 +308,21 @@ class NvmlController {
       )
     }
 
-    return this.snapshot()
+    const nextSnapshot = this.snapshot()
+
+    if (nextSnapshot.mode === "curve" && nextSnapshot.controlError === null) {
+      try {
+        savePersistedFanCurve(this.#storageIdentity(), this.#curve)
+        this.#storageError = null
+      } catch (error) {
+        this.#storageError =
+          `The fan curve was applied, but it could not be saved. ${
+            errorMessage(error)
+          } Select Apply curve to retry saving it.`
+      }
+    }
+
+    return { ...nextSnapshot, storageError: this.#storageError }
   }
 
   restoreAutomatic() {
@@ -426,6 +449,29 @@ class NvmlController {
     }
 
     return validated
+  }
+
+  #storageIdentity(): FanCurveStorageIdentity {
+    return {
+      gpuIndex: GPU_INDEX,
+      gpuName: this.#gpuName,
+      fanMin: this.#fanMin,
+      fanMax: this.#fanMax,
+    }
+  }
+
+  #loadPersistedCurve() {
+    try {
+      const persistedCurve = loadPersistedFanCurve(this.#storageIdentity())
+
+      if (persistedCurve !== null) {
+        this.#curve = this.#validateCurve(persistedCurve)
+      }
+    } catch (error) {
+      this.#storageError = `The saved fan curve could not be loaded. ${
+        errorMessage(error)
+      } The default curve is shown. Apply a curve to replace the saved value.`
+    }
   }
 
   #runControlTick() {

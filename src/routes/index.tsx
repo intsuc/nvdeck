@@ -47,6 +47,7 @@ function Dashboard() {
   )
   const [isDirty, setIsDirty] = useState(false)
   const isDirtyRef = useRef(false)
+  const mutationEpochRef = useRef(0)
   const [pendingAction, setPendingAction] = useState<PendingAction>(null)
   const [requestError, setRequestError] = useState<string | null>(null)
 
@@ -55,6 +56,8 @@ function Dashboard() {
     let timeout: ReturnType<typeof setTimeout> | undefined
 
     async function poll() {
+      const mutationEpoch = mutationEpochRef.current
+
       try {
         const nextSnapshot = await getNvmlSnapshot()
 
@@ -62,14 +65,18 @@ function Dashboard() {
           return
         }
 
-        setSnapshot(nextSnapshot)
-        setRequestError(null)
+        if (mutationEpoch === mutationEpochRef.current) {
+          setSnapshot(nextSnapshot)
+          setRequestError(null)
 
-        if (!isDirtyRef.current) {
-          setDraftCurve(nextSnapshot.curve)
+          if (!isDirtyRef.current) {
+            setDraftCurve(nextSnapshot.curve)
+          }
         }
       } catch (error) {
-        if (!cancelled) {
+        if (
+          !cancelled && mutationEpoch === mutationEpochRef.current
+        ) {
           setSnapshot(null)
           setRequestError(
             error instanceof Error ? error.message : String(error),
@@ -104,19 +111,26 @@ function Dashboard() {
 
     setPendingAction("apply")
     setRequestError(null)
+    mutationEpochRef.current += 1
 
     try {
       const nextSnapshot = await setNvmlFanCurve({
         data: { curve: draftCurve },
       })
+      mutationEpochRef.current += 1
       setSnapshot(nextSnapshot)
 
-      if (nextSnapshot.status === "ready") {
+      if (
+        nextSnapshot.status === "ready" &&
+        nextSnapshot.mode === "curve" &&
+        nextSnapshot.controlError === null
+      ) {
         setDraftCurve(nextSnapshot.curve)
         isDirtyRef.current = false
         setIsDirty(false)
       }
     } catch (error) {
+      mutationEpochRef.current += 1
       setSnapshot(null)
       setRequestError(error instanceof Error ? error.message : String(error))
     }
@@ -131,17 +145,18 @@ function Dashboard() {
 
     setPendingAction("restore")
     setRequestError(null)
+    mutationEpochRef.current += 1
 
     try {
       const nextSnapshot = await restoreNvmlAutomatic()
+      mutationEpochRef.current += 1
       setSnapshot(nextSnapshot)
 
-      if (nextSnapshot.status === "ready") {
+      if (nextSnapshot.status === "ready" && !isDirtyRef.current) {
         setDraftCurve(nextSnapshot.curve)
-        isDirtyRef.current = false
-        setIsDirty(false)
       }
     } catch (error) {
+      mutationEpochRef.current += 1
       setSnapshot(null)
       setRequestError(error instanceof Error ? error.message : String(error))
     }
@@ -212,6 +227,16 @@ function Dashboard() {
               </Alert>
             )
             : null}
+          {readySnapshot?.storageError
+            ? (
+              <Alert>
+                <AlertTitle>Fan curve storage warning</AlertTitle>
+                <AlertDescription>
+                  {readySnapshot.storageError}
+                </AlertDescription>
+              </Alert>
+            )
+            : null}
           {requestError
             ? (
               <Alert variant="destructive">
@@ -254,7 +279,8 @@ function Dashboard() {
             <Button
               disabled={!readySnapshot || pendingAction !== null ||
                 readySnapshot.mode === "manual" ||
-                (!isDirty && readySnapshot.mode === "curve")}
+                (!isDirty && readySnapshot.mode === "curve" &&
+                  readySnapshot.storageError === null)}
               onClick={() => void applyCurve()}
             >
               {pendingAction === "apply"
