@@ -7,6 +7,17 @@ export type FanCurvePoint = {
 
 export type FanControlMode = "automatic" | "curve" | "manual"
 
+export type NvmlMetric<T> =
+  | { status: "available"; value: T }
+  | { status: "unavailable"; message: string }
+
+export type NvmlPowerMetric = NvmlMetric<{ milliwatts: number }>
+
+export type NvmlMemoryMetric = NvmlMetric<{
+  usedBytes: number
+  totalBytes: number
+}>
+
 export type NvmlReadySnapshot = {
   status: "ready"
   gpuIndex: number
@@ -21,6 +32,11 @@ export type NvmlReadySnapshot = {
   targetFanSpeed: number | null
   controlError: string | null
   storageError: string | null
+  power: {
+    draw: NvmlPowerMetric
+    cap: NvmlPowerMetric
+  }
+  memory: NvmlMemoryMetric
   sampledAt: number
 }
 

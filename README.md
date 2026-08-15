@@ -20,6 +20,12 @@ rendered as the current point inside the chart. Move a curve point vertically,
 then select **Apply curve** to start curve control. Select **Restore automatic
 control** before stopping the server when manual control is no longer needed.
 
+The dashboard also shows the GPU's live power usage, software power cap, and
+memory usage. NVML reports power in milliwatts; the dashboard converts it to
+watts and renders GPU memory as used / total in MiB or GiB. These readings are
+independent of fan control. If one is unsupported or fails, only that reading
+becomes unavailable, the reason is shown, and no stale value is retained.
+
 NVML does not store fan curves. While curve control is active, the Deno server
 samples the GPU temperature once per second, interpolates the chart curve, and
 sets every fan to the resulting target. A read or write failure triggers an

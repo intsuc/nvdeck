@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router"
 import { useEffect, useRef, useState } from "react"
 
 import { FanCurveChart } from "@/components/fan-curve-chart"
+import { GpuTelemetry } from "@/components/gpu-telemetry"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -245,6 +246,7 @@ function Dashboard() {
               </Alert>
             )
             : null}
+          {readySnapshot ? <GpuTelemetry snapshot={readySnapshot} /> : null}
           <FanCurveChart
             curve={draftCurve}
             snapshot={readySnapshot}

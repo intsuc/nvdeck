@@ -8,18 +8,23 @@ import {
   loadPersistedFanCurve,
   savePersistedFanCurve,
 } from "./fan-curve-storage.server"
+import { createNvmlMemoryV2Buffer, decodeNvmlMemoryV2 } from "./nvml-memory"
 import {
   createDefaultFanCurve,
   FAN_CURVE_TEMPERATURES,
   type FanControlMode,
   type FanCurvePoint,
   interpolateFanSpeed,
+  type NvmlMemoryMetric,
+  type NvmlMetric,
+  type NvmlPowerMetric,
   type NvmlReadySnapshot,
   type NvmlSnapshot,
 } from "./nvml.types"
 
 const NVML_LIBRARY = "libnvidia-ml.so.1"
 const NVML_SUCCESS = 0
+const NVML_ERROR_NOT_SUPPORTED = 3
 const NVML_TEMPERATURE_GPU = 0
 const NVML_TEMPERATURE_V1 = 0x0100000c
 const NVML_FAN_POLICY_AUTOMATIC = 0
@@ -58,6 +63,18 @@ const NVML_SYMBOLS = {
     result: "i32",
   },
   nvmlDeviceGetTemperatureV: {
+    parameters: ["pointer", "buffer"],
+    result: "i32",
+  },
+  nvmlDeviceGetPowerUsage: {
+    parameters: ["pointer", "buffer"],
+    result: "i32",
+  },
+  nvmlDeviceGetPowerManagementLimit: {
+    parameters: ["pointer", "buffer"],
+    result: "i32",
+  },
+  nvmlDeviceGetMemoryInfo_v2: {
     parameters: ["pointer", "buffer"],
     result: "i32",
   },
@@ -103,6 +120,27 @@ function decodeCString(buffer: Uint8Array) {
   const terminator = buffer.indexOf(0)
   const bytes = terminator === -1 ? buffer : buffer.subarray(0, terminator)
   return new TextDecoder().decode(bytes)
+}
+
+function readMetric<T>(read: () => T): NvmlMetric<T> {
+  try {
+    return { status: "available", value: read() }
+  } catch (error) {
+    return { status: "unavailable", message: errorMessage(error) }
+  }
+}
+
+function checkNvmlMetric(
+  library: NvmlLibrary,
+  code: number,
+  operation: string,
+  label: string,
+) {
+  if (code === NVML_ERROR_NOT_SUPPORTED) {
+    throw new Error(`${label} is not supported by this GPU.`)
+  }
+
+  checkNvml(library, code, operation)
 }
 
 class NvmlController {
@@ -257,35 +295,47 @@ class NvmlController {
   }
 
   snapshot(): NvmlReadySnapshot {
+    let temperature: number
+    let fanSpeed: number
+    let targetFanSpeed: number | null
+
     try {
-      const temperature = this.#readTemperature()
-      const fanSpeed = this.#readAverageFanSpeed()
-      const targetFanSpeed = this.#mode === "curve"
+      temperature = this.#readTemperature()
+      fanSpeed = this.#readAverageFanSpeed()
+      targetFanSpeed = this.#mode === "curve"
         ? interpolateFanSpeed(this.#curve, temperature)
         : null
-
-      return {
-        status: "ready",
-        gpuIndex: GPU_INDEX,
-        gpuName: this.#gpuName,
-        fanCount: this.#fanCount,
-        fanMin: this.#fanMin,
-        fanMax: this.#fanMax,
-        temperature,
-        fanSpeed,
-        curve: this.#curve.map((point) => ({ ...point })),
-        mode: this.#mode,
-        targetFanSpeed,
-        controlError: this.#controlError,
-        storageError: this.#storageError,
-        sampledAt: Date.now(),
-      }
     } catch (error) {
       if (this.#mode === "curve") {
         this.#stopCurveAfterError(error)
       }
 
       throw error
+    }
+
+    const power = {
+      draw: this.#readPowerDraw(),
+      cap: this.#readPowerCap(),
+    }
+    const memory = this.#readMemoryUsage()
+
+    return {
+      status: "ready",
+      gpuIndex: GPU_INDEX,
+      gpuName: this.#gpuName,
+      fanCount: this.#fanCount,
+      fanMin: this.#fanMin,
+      fanMax: this.#fanMax,
+      temperature,
+      fanSpeed,
+      curve: this.#curve.map((point) => ({ ...point })),
+      mode: this.#mode,
+      targetFanSpeed,
+      controlError: this.#controlError,
+      storageError: this.#storageError,
+      power,
+      memory,
+      sampledAt: Date.now(),
     }
   }
 
@@ -399,6 +449,51 @@ class NvmlController {
     }
 
     return Math.round(total / this.#fanCount)
+  }
+
+  #readPowerDraw(): NvmlPowerMetric {
+    return readMetric(() => {
+      const power = new Uint32Array(1)
+      checkNvmlMetric(
+        this.#library,
+        this.#library.symbols.nvmlDeviceGetPowerUsage(this.#device, power),
+        "nvmlDeviceGetPowerUsage",
+        "Power usage",
+      )
+      return { milliwatts: power[0] }
+    })
+  }
+
+  #readPowerCap(): NvmlPowerMetric {
+    return readMetric(() => {
+      const limit = new Uint32Array(1)
+      checkNvmlMetric(
+        this.#library,
+        this.#library.symbols.nvmlDeviceGetPowerManagementLimit(
+          this.#device,
+          limit,
+        ),
+        "nvmlDeviceGetPowerManagementLimit",
+        "Power cap",
+      )
+      return { milliwatts: limit[0] }
+    })
+  }
+
+  #readMemoryUsage(): NvmlMemoryMetric {
+    return readMetric(() => {
+      const memory = createNvmlMemoryV2Buffer()
+      checkNvmlMetric(
+        this.#library,
+        this.#library.symbols.nvmlDeviceGetMemoryInfo_v2(
+          this.#device,
+          memory,
+        ),
+        "nvmlDeviceGetMemoryInfo_v2",
+        "Memory usage",
+      )
+      return decodeNvmlMemoryV2(memory)
+    })
   }
 
   #validateCurve(curve: FanCurvePoint[]) {
