@@ -1,6 +1,8 @@
 import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
+  type Ref,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react"
@@ -11,6 +13,8 @@ import {
   Line,
   useCartesianScale,
   usePlotArea,
+  useXAxisDomain,
+  useYAxisDomain,
   useYAxisInverseScale,
   XAxis,
   YAxis,
@@ -38,22 +42,117 @@ type FanCurveChartProps = {
   onCurveChange: (curve: FanCurvePoint[]) => void
 }
 
+type HorizontalViewport = { x: number; width: number }
+
 type CurveControlPointProps = {
   point: FanCurvePoint
+  currentReading: {
+    temperature: number
+    fanSpeed: number
+    fanSpeedLabel: "Average fan speed" | "Fan speed"
+  } | null
+  horizontalViewport: HorizontalViewport
   disabled: boolean
   locked: boolean
+  touchRevealed: boolean
   minimum: number
   maximum: number
+  onTouchReveal: () => void
   onDrag: (fanSpeed: number) => void
   onKeyboardChange: (fanSpeed: number) => void
 }
 
+type PointFeedbackProps = {
+  anchorX: number
+  anchorY: number
+  lines: string[]
+  plotArea: { x: number; y: number; width: number; height: number }
+  horizontalViewport: HorizontalViewport
+  tone: string
+  variant: "annotation" | "tooltip"
+  groupRef?: Ref<SVGGElement>
+}
+
+function PointFeedback({
+  anchorX,
+  anchorY,
+  lines,
+  plotArea,
+  horizontalViewport,
+  tone,
+  variant,
+  groupRef,
+}: PointFeedbackProps) {
+  const plotRight = plotArea.x + plotArea.width
+  const visibleLeft = horizontalViewport.width > 0
+    ? horizontalViewport.x
+    : plotArea.x
+  const visibleRight = horizontalViewport.width > 0
+    ? horizontalViewport.x + horizontalViewport.width
+    : plotRight
+  const visibleWidth = Math.max(1, visibleRight - visibleLeft)
+  const preferredWidth = lines.length === 1 ? 320 : 400
+  const width = Math.min(preferredWidth, plotArea.width, visibleWidth)
+  const preferredHeight = lines.length === 1 ? 112 : lines.length * 80 + 16
+  const height = Math.min(preferredHeight, plotArea.height)
+  const plotBottom = plotArea.y + plotArea.height
+  const spaceAbove = anchorY - plotArea.y
+  const spaceBelow = plotBottom - anchorY
+  const placeAbove = spaceAbove >= height + 8 || spaceAbove >= spaceBelow
+  const idealY = placeAbove ? anchorY - height - 8 : anchorY + 8
+  const x = Math.min(
+    Math.max(anchorX - width / 2, visibleLeft),
+    visibleRight - width,
+  )
+  const y = Math.min(
+    Math.max(idealY, plotArea.y),
+    plotBottom - height,
+  )
+
+  return (
+    <g
+      ref={groupRef}
+      aria-hidden="true"
+      pointerEvents="none"
+      style={{ transform: `translate(${anchorX}px, ${anchorY}px)` }}
+    >
+      <foreignObject
+        x={x - anchorX}
+        y={y - anchorY}
+        width={width}
+        height={height}
+      >
+        <div
+          className={`flex h-full ${placeAbove ? "items-end" : "items-start"}`}
+        >
+          <div
+            className={variant === "tooltip"
+              ? "w-full wrap-anywhere border border-current bg-background px-2 py-1 text-center text-xs leading-tight text-foreground"
+              : "w-full wrap-anywhere border-l-2 border-current bg-background px-2 py-1 text-center text-xs leading-tight text-foreground"}
+            style={{ color: tone }}
+          >
+            {lines.map((line) => (
+              <span key={line} className="block text-foreground">
+                {line}
+              </span>
+            ))}
+          </div>
+        </div>
+      </foreignObject>
+    </g>
+  )
+}
+
 function CurveControlPoint({
   point,
+  currentReading,
+  horizontalViewport,
   disabled,
   locked,
+  touchRevealed,
   minimum,
   maximum,
+  onTouchReveal,
   onDrag,
   onKeyboardChange,
 }: CurveControlPointProps) {
@@ -61,22 +160,66 @@ function CurveControlPoint({
     x: point.temperature,
     y: point.fanSpeed,
   })
+  const currentCoordinate = useCartesianScale({
+    x: currentReading?.temperature ?? point.temperature,
+    y: currentReading?.fanSpeed ?? point.fanSpeed,
+  })
   const inverseYScale = useYAxisInverseScale()
+  const plotArea = usePlotArea()
   const activePointer = useRef<number | null>(null)
+  const pendingFocusPointerType = useRef<string | null>(null)
   const [isHovered, setIsHovered] = useState(false)
+  const [hasVisibleFocus, setHasVisibleFocus] = useState(false)
 
-  if (!coordinate) {
+  if (!coordinate || !plotArea) {
     return null
   }
 
   const { x: cx, y: cy } = coordinate
+  const overlapsCurrentReading = currentReading !== null &&
+    currentCoordinate !== undefined &&
+    Math.abs(currentCoordinate.x - cx) < 44 &&
+    Math.abs(currentCoordinate.y - cy) < 44
   const interactionDisabled = disabled || locked
-  const labelWidth = 112
-  const labelX = cx - labelWidth / 2
-  const labelY = cy < 44 ? cy + 14 : cy - 32
+  const feedbackVariant = isHovered
+    ? "tooltip"
+    : hasVisibleFocus || touchRevealed
+    ? "annotation"
+    : null
+  const feedbackLines = [
+    `${
+      overlapsCurrentReading ? "Control: " : ""
+    }${point.temperature} °C / ${point.fanSpeed}%`,
+    ...(locked ? ["Safety limit · locked"] : []),
+    ...(overlapsCurrentReading && currentReading
+      ? [
+        `Current: ${currentReading.temperature} °C / ${currentReading.fanSpeed}%`,
+        currentReading.fanSpeedLabel,
+      ]
+      : []),
+  ]
+  const currentReadingDescription = overlapsCurrentReading && currentReading
+    ? ` Current reading: ${currentReading.temperature} °C and ${currentReading.fanSpeed}% ${currentReading.fanSpeedLabel.toLowerCase()}.`
+    : ""
 
   function handleKeyDown(event: ReactKeyboardEvent<SVGRectElement>) {
+    setHasVisibleFocus(true)
+
     if (interactionDisabled) {
+      if (
+        locked &&
+        [
+          "ArrowUp",
+          "ArrowRight",
+          "ArrowDown",
+          "ArrowLeft",
+          "Home",
+          "End",
+        ].includes(event.key)
+      ) {
+        event.preventDefault()
+        event.stopPropagation()
+      }
       return
     }
 
@@ -150,53 +293,63 @@ function CurveControlPoint({
 
   return (
     <>
-      {isHovered
+      {feedbackVariant
         ? (
           <ZIndexLayer zIndex={DefaultZIndexes.label}>
-            <g pointerEvents="none" aria-hidden="true">
-              <rect
-                x={labelX}
-                y={labelY}
-                width={labelWidth}
-                height={22}
-                fill="var(--background)"
-                stroke="var(--color-curve)"
-              />
-              <text
-                x={cx}
-                y={labelY + 15}
-                textAnchor="middle"
-                fill="var(--foreground)"
-                fontSize={11}
-              >
-                {point.temperature} °C / {point.fanSpeed}%
-              </text>
-            </g>
+            <PointFeedback
+              anchorX={cx}
+              anchorY={cy}
+              lines={feedbackLines}
+              plotArea={plotArea}
+              horizontalViewport={horizontalViewport}
+              tone="var(--color-curve)"
+              variant={feedbackVariant}
+            />
           </ZIndexLayer>
         )
         : null}
       <ZIndexLayer zIndex={DefaultZIndexes.scatter}>
         <g>
           <rect
-            x={cx - 14}
-            y={cy - 14}
-            width={28}
-            height={28}
+            x={cx - 22}
+            y={cy - 22}
+            width={44}
+            height={44}
             fill="transparent"
+            stroke="transparent"
+            strokeWidth={2}
             role="slider"
-            tabIndex={interactionDisabled ? -1 : 0}
-            aria-label={`Fan speed at ${point.temperature} °C`}
+            tabIndex={disabled ? -1 : 0}
+            aria-label={locked
+              ? `Fan speed at ${point.temperature} °C, safety limit, locked.${currentReadingDescription}`
+              : `Fan speed at ${point.temperature} °C.${currentReadingDescription}`}
             aria-orientation="vertical"
             aria-valuemin={minimum}
             aria-valuemax={maximum}
             aria-valuenow={point.fanSpeed}
-            aria-valuetext={`${point.fanSpeed}% at ${point.temperature} °C`}
-            aria-disabled={interactionDisabled}
+            aria-valuetext={locked
+              ? `${point.fanSpeed}% at ${point.temperature} °C. Safety limit, locked.${currentReadingDescription}`
+              : `${point.fanSpeed}% at ${point.temperature} °C.${currentReadingDescription}`}
+            aria-disabled={disabled || undefined}
+            aria-readonly={locked || undefined}
             style={{
               cursor: interactionDisabled ? "default" : "ns-resize",
-              touchAction: interactionDisabled ? "auto" : "none",
+              touchAction: interactionDisabled ? "manipulation" : "none",
             }}
             onPointerDown={(event: ReactPointerEvent<SVGRectElement>) => {
+              if (!disabled && event.pointerType === "mouse") {
+                pendingFocusPointerType.current = "mouse"
+                event.currentTarget.focus({ preventScroll: true })
+              } else {
+                pendingFocusPointerType.current = null
+              }
+
+              if (event.pointerType !== "mouse") {
+                event.preventDefault()
+                event.stopPropagation()
+                onTouchReveal()
+              }
+
               if (interactionDisabled || event.button !== 0) {
                 return
               }
@@ -211,10 +364,39 @@ function CurveControlPoint({
             onLostPointerCapture={() => {
               activePointer.current = null
             }}
-            onPointerEnter={() => setIsHovered(true)}
-            onPointerLeave={() => setIsHovered(false)}
+            onPointerEnter={(event) => {
+              if (event.pointerType === "mouse") {
+                setIsHovered(true)
+              }
+            }}
+            onPointerLeave={(event) => {
+              if (event.pointerType === "mouse") {
+                setIsHovered(false)
+              }
+            }}
+            onFocus={() => {
+              setHasVisibleFocus(
+                pendingFocusPointerType.current !== "mouse",
+              )
+              pendingFocusPointerType.current = null
+            }}
+            onBlur={() => setHasVisibleFocus(false)}
             onKeyDown={handleKeyDown}
           />
+          {hasVisibleFocus
+            ? (
+              <rect
+                x={cx - 10}
+                y={cy - 10}
+                width={20}
+                height={20}
+                fill="none"
+                strokeWidth={3}
+                pointerEvents="none"
+                className="stroke-foreground forced-colors:stroke-[Highlight]"
+              />
+            )
+            : null}
           <rect
             x={cx - 5}
             y={cy - 5}
@@ -234,39 +416,155 @@ function CurveControlPoint({
 function CurrentReading({
   temperature,
   fanSpeed,
+  fanSpeedLabel,
+  horizontalViewport,
+  hovered,
+  touchRevealed,
 }: {
   temperature: number
   fanSpeed: number
+  fanSpeedLabel: "Average fan speed" | "Fan speed"
+  horizontalViewport: HorizontalViewport
+  hovered: boolean
+  touchRevealed: boolean
 }) {
   const coordinate = useCartesianScale({ x: temperature, y: fanSpeed })
   const plotArea = usePlotArea()
-  const [isHovered, setIsHovered] = useState(false)
+  const xDomain = useXAxisDomain()
+  const yDomain = useYAxisDomain()
+  const verticalLineRef = useRef<SVGGElement>(null)
+  const horizontalLineRef = useRef<SVGGElement>(null)
+  const pointRef = useRef<SVGGElement>(null)
+  const feedbackRef = useRef<SVGGElement>(null)
+  const previousFrame = useRef<
+    {
+      temperature: number
+      fanSpeed: number
+      x: number
+      y: number
+      scaleSignature: string
+    } | null
+  >(null)
+  const [hasVisibleFocus, setHasVisibleFocus] = useState(false)
+  const scaleSignature = JSON.stringify([
+    plotArea?.x,
+    plotArea?.y,
+    plotArea?.width,
+    plotArea?.height,
+    xDomain,
+    yDomain,
+  ])
+  const coordinateX = coordinate?.x
+  const coordinateY = coordinate?.y
+
+  useLayoutEffect(() => {
+    if (coordinateX === undefined || coordinateY === undefined) {
+      return
+    }
+
+    const frame = {
+      temperature,
+      fanSpeed,
+      x: coordinateX,
+      y: coordinateY,
+      scaleSignature,
+    }
+    const previous = previousFrame.current
+    const sampleChanged = previous !== null &&
+      (previous.temperature !== temperature || previous.fanSpeed !== fanSpeed)
+    const scaleChanged = previous !== null &&
+      previous.scaleSignature !== scaleSignature
+    const shouldAnimate = sampleChanged && !scaleChanged &&
+      !globalThis.matchMedia("(prefers-reduced-motion: reduce)").matches
+    const targets = [
+      {
+        element: verticalLineRef.current,
+        from: previous ? `translateX(${previous.x}px)` : null,
+        to: `translateX(${coordinateX}px)`,
+      },
+      {
+        element: horizontalLineRef.current,
+        from: previous ? `translateY(${previous.y}px)` : null,
+        to: `translateY(${coordinateY}px)`,
+      },
+      {
+        element: pointRef.current,
+        from: previous ? `translate(${previous.x}px, ${previous.y}px)` : null,
+        to: `translate(${coordinateX}px, ${coordinateY}px)`,
+      },
+      {
+        element: feedbackRef.current,
+        from: previous ? `translate(${previous.x}px, ${previous.y}px)` : null,
+        to: `translate(${coordinateX}px, ${coordinateY}px)`,
+      },
+    ]
+
+    for (const { element, from, to } of targets) {
+      if (!element) {
+        continue
+      }
+
+      const runningAnimations = element.getAnimations()
+      const currentTransform = runningAnimations.length > 0
+        ? getComputedStyle(element).transform
+        : from
+      runningAnimations.forEach((animation) => animation.cancel())
+
+      if (shouldAnimate && currentTransform) {
+        element.animate(
+          [{ transform: currentTransform }, { transform: to }],
+          {
+            duration: 500,
+            easing: "cubic-bezier(0, 0, 0.2, 1)",
+          },
+        )
+      }
+    }
+
+    previousFrame.current = frame
+  }, [
+    coordinateX,
+    coordinateY,
+    fanSpeed,
+    scaleSignature,
+    temperature,
+  ])
+
+  useLayoutEffect(() => {
+    const elements = [
+      verticalLineRef.current,
+      horizontalLineRef.current,
+      pointRef.current,
+      feedbackRef.current,
+    ]
+
+    return () => {
+      elements.forEach((element) => {
+        element?.getAnimations().forEach((animation) => animation.cancel())
+      })
+    }
+  }, [])
 
   if (!coordinate || !plotArea) {
     return null
   }
 
-  const labelWidth = 150
-  const labelHeight = 24
-  const absoluteLabelX = Math.min(
-    Math.max(coordinate.x + 10, plotArea.x),
-    plotArea.x + plotArea.width - labelWidth,
-  )
-  const absoluteLabelY = coordinate.y - labelHeight - 10 < plotArea.y
-    ? coordinate.y + 10
-    : coordinate.y - labelHeight - 10
-  const labelX = absoluteLabelX - coordinate.x
-  const labelY = absoluteLabelY - coordinate.y
-  const movementClassName =
-    "transition-transform duration-500 ease-out motion-reduce:transition-none"
+  const feedbackVariant = hovered
+    ? "tooltip"
+    : touchRevealed || hasVisibleFocus
+    ? "annotation"
+    : null
+  const feedbackLines = fanSpeedLabel === "Average fan speed"
+    ? [`Current: ${temperature} °C`, fanSpeedLabel, `${fanSpeed}%`]
+    : [`Current: ${temperature} °C`, `${fanSpeedLabel}: ${fanSpeed}%`]
 
   return (
     <>
-      <ZIndexLayer zIndex={DefaultZIndexes.scatter}>
+      <ZIndexLayer zIndex={DefaultZIndexes.scatter - 1}>
         <g
+          ref={verticalLineRef}
           aria-hidden="true"
           pointerEvents="none"
-          className={movementClassName}
           style={{ transform: `translateX(${coordinate.x}px)` }}
         >
           <line
@@ -279,9 +577,9 @@ function CurrentReading({
           />
         </g>
         <g
+          ref={horizontalLineRef}
           aria-hidden="true"
           pointerEvents="none"
-          className={movementClassName}
           style={{ transform: `translateY(${coordinate.y}px)` }}
         >
           <line
@@ -294,21 +592,41 @@ function CurrentReading({
           />
         </g>
         <g
-          aria-hidden="true"
-          className={movementClassName}
+          ref={pointRef}
           style={{
             transform: `translate(${coordinate.x}px, ${coordinate.y}px)`,
           }}
         >
           <rect
-            x={-14}
-            y={-14}
-            width={28}
-            height={28}
+            x={-22}
+            y={-22}
+            width={44}
+            height={44}
             fill="transparent"
-            onPointerEnter={() => setIsHovered(true)}
-            onPointerLeave={() => setIsHovered(false)}
+            stroke="transparent"
+            strokeWidth={2}
+            pointerEvents="none"
+            data-current-reading-target=""
+            role="img"
+            tabIndex={0}
+            aria-label={`Current temperature ${temperature} °C, ${fanSpeedLabel.toLowerCase()} ${fanSpeed}%`}
+            onFocus={() => setHasVisibleFocus(true)}
+            onBlur={() => setHasVisibleFocus(false)}
           />
+          {hasVisibleFocus
+            ? (
+              <rect
+                x={-10}
+                y={-10}
+                width={20}
+                height={20}
+                fill="none"
+                strokeWidth={3}
+                pointerEvents="none"
+                className="stroke-foreground forced-colors:stroke-[Highlight]"
+              />
+            )
+            : null}
           <rect
             x={-5}
             y={-5}
@@ -321,34 +639,19 @@ function CurrentReading({
           />
         </g>
       </ZIndexLayer>
-      {isHovered
+      {feedbackVariant
         ? (
           <ZIndexLayer zIndex={DefaultZIndexes.label}>
-            <g
-              aria-hidden="true"
-              pointerEvents="none"
-              className={movementClassName}
-              style={{
-                transform: `translate(${coordinate.x}px, ${coordinate.y}px)`,
-              }}
-            >
-              <rect
-                x={labelX}
-                y={labelY}
-                width={labelWidth}
-                height={labelHeight}
-                fill="var(--background)"
-                stroke="var(--color-current)"
-              />
-              <text
-                x={labelX + 8}
-                y={labelY + 16}
-                fill="var(--foreground)"
-                fontSize={11}
-              >
-                Current: {temperature} °C / {fanSpeed}%
-              </text>
-            </g>
+            <PointFeedback
+              anchorX={coordinate.x}
+              anchorY={coordinate.y}
+              lines={feedbackLines}
+              plotArea={plotArea}
+              horizontalViewport={horizontalViewport}
+              tone="var(--color-current)"
+              variant={feedbackVariant}
+              groupRef={feedbackRef}
+            />
           </ZIndexLayer>
         )
         : null}
@@ -362,6 +665,16 @@ export function FanCurveChart({
   disabled,
   onCurveChange,
 }: FanCurveChartProps) {
+  const scrollerRef = useRef<HTMLDivElement>(null)
+  const [horizontalViewport, setHorizontalViewport] = useState<
+    HorizontalViewport
+  >({ x: 0, width: 0 })
+  const [hoveredCurrentSample, setHoveredCurrentSample] = useState<
+    number | null
+  >(null)
+  const [touchRevealedPoint, setTouchRevealedPoint] = useState<string | null>(
+    null,
+  )
   const fanMin = snapshot?.fanMin ?? curve[0]?.fanSpeed ?? 0
   const fanMax = snapshot?.fanMax ?? curve.at(-1)?.fanSpeed ?? 100
   const currentTemperature = snapshot?.temperature
@@ -375,6 +688,42 @@ export function FanCurveChart({
   const yMaximum = currentFanSpeed === undefined
     ? 100
     : Math.max(100, Math.ceil(currentFanSpeed / 10) * 10)
+  const temperatureGaps = curve.slice(1).flatMap((point, index) => {
+    const previousPoint = curve[index]
+    const gap = previousPoint
+      ? point.temperature - previousPoint.temperature
+      : 0
+    return gap > 0 ? [gap] : []
+  })
+  const smallestTemperatureGap = temperatureGaps.length > 0
+    ? Math.min(...temperatureGaps)
+    : 15
+  const minimumPlotWidth = ((xMaximum - xMinimum) / smallestTemperatureGap) * 44
+  const minimumChartWidth = Math.ceil(minimumPlotWidth + 128)
+
+  useLayoutEffect(() => {
+    const scroller = scrollerRef.current
+    if (!scroller) {
+      return
+    }
+
+    const observer = new ResizeObserver(() => {
+      setHoveredCurrentSample(null)
+      setHorizontalViewport((current) => {
+        const nextViewport = {
+          x: scroller.scrollLeft,
+          width: scroller.clientWidth,
+        }
+        return current.x === nextViewport.x &&
+            current.width === nextViewport.width
+          ? current
+          : nextViewport
+      })
+    })
+    observer.observe(scroller)
+
+    return () => observer.disconnect()
+  }, [])
 
   function updatePoint(index: number, requestedFanSpeed: number) {
     const point = curve[index]
@@ -403,91 +752,182 @@ export function FanCurveChart({
     )
   }
 
+  const fanSpeedLabel = snapshot && snapshot.fanCount > 1
+    ? "Average fan speed"
+    : "Fan speed"
   const currentLabel = snapshot
-    ? `Current temperature ${snapshot.temperature} °C, fan speed ${snapshot.fanSpeed}%`
+    ? `Current temperature ${snapshot.temperature} °C, ${fanSpeedLabel.toLowerCase()} ${snapshot.fanSpeed}%`
     : "Getting current readings"
 
-  return (
-    <ChartContainer
-      config={chartConfig}
-      className="h-[min(68svh,34rem)] min-h-88 w-full aspect-auto"
-      initialDimension={{ width: 960, height: 520 }}
-      role="group"
-      aria-label={`${currentLabel}. Fan curve editor`}
-    >
-      <ComposedChart
-        accessibilityLayer
-        data={curve}
-        margin={{ top: 32, right: 24, bottom: 22, left: 8 }}
-      >
-        <CartesianGrid strokeDasharray="3 3" />
-        <XAxis
-          type="number"
-          dataKey="temperature"
-          domain={[xMinimum, xMaximum]}
-          allowDataOverflow
-          tickLine={false}
-          axisLine={false}
-          tickFormatter={(value: number) => `${value} °C`}
-          label={{
-            value: "Temperature [°C]",
-            position: "insideBottom",
-            offset: -14,
-            fill: "var(--muted-foreground)",
-          }}
-        />
-        <YAxis
-          type="number"
-          dataKey="fanSpeed"
-          domain={[0, yMaximum]}
-          allowDataOverflow
-          width={64}
-          tickLine={false}
-          axisLine={false}
-          tickFormatter={(value: number) => `${value}%`}
-          label={{
-            value: "Fan speed [%]",
-            angle: -90,
-            position: "insideLeft",
-            fill: "var(--muted-foreground)",
-          }}
-        />
-        <Line
-          type="linear"
-          dataKey="fanSpeed"
-          name="curve"
-          stroke="var(--color-curve)"
-          strokeWidth={2}
-          isAnimationActive={false}
-          activeDot={false}
-          dot={false}
-        />
-        {snapshot
-          ? (
-            <CurrentReading
-              temperature={snapshot.temperature}
-              fanSpeed={snapshot.fanSpeed}
-            />
-          )
-          : null}
-        {curve.map((point, index) => {
-          const nextPoint = curve[index + 1]
-          const previousPoint = curve[index - 1]
+  function hitsCurrentReading(
+    container: HTMLDivElement,
+    clientX: number,
+    clientY: number,
+  ) {
+    const target = container.querySelector("[data-current-reading-target]")
+    const bounds = target?.getBoundingClientRect()
+    return Boolean(
+      bounds && clientX >= bounds.left && clientX <= bounds.right &&
+        clientY >= bounds.top && clientY <= bounds.bottom,
+    )
+  }
 
-          return (
-            <CurveControlPoint
-              key={point.temperature}
-              point={point}
-              disabled={disabled}
-              locked={!nextPoint}
-              minimum={previousPoint?.fanSpeed ?? fanMin}
-              maximum={nextPoint?.fanSpeed ?? fanMax}
-              onDrag={(fanSpeed) => updatePoint(index, fanSpeed)}
-              onKeyboardChange={(fanSpeed) => updatePoint(index, fanSpeed)}
-            />
+  return (
+    <div
+      ref={scrollerRef}
+      className="w-full overflow-x-auto overscroll-x-contain"
+      onScroll={(event) => {
+        setHoveredCurrentSample(null)
+        const nextViewport = {
+          x: event.currentTarget.scrollLeft,
+          width: event.currentTarget.clientWidth,
+        }
+        setHorizontalViewport((current) =>
+          current.x === nextViewport.x && current.width === nextViewport.width
+            ? current
+            : nextViewport
+        )
+      }}
+    >
+      <ChartContainer
+        config={chartConfig}
+        className="h-[min(68svh,34rem)] min-h-88 w-full aspect-auto"
+        style={{ minWidth: `max(32rem, ${minimumChartWidth}px)` }}
+        role="group"
+        aria-label={`${currentLabel}. Fan curve editor`}
+        onPointerMove={(event) => {
+          if (event.pointerType !== "mouse") {
+            return
+          }
+
+          const target = event.target as Element
+          if (target.closest?.('[role="slider"]')) {
+            setHoveredCurrentSample(null)
+            return
+          }
+
+          setHoveredCurrentSample(
+            hitsCurrentReading(
+                event.currentTarget,
+                event.clientX,
+                event.clientY,
+              )
+              ? snapshot?.sampledAt ?? null
+              : null,
           )
-        })}
-      </ComposedChart>
-    </ChartContainer>
+        }}
+        onPointerLeave={() => setHoveredCurrentSample(null)}
+        onPointerDown={(event) => {
+          if (event.pointerType !== "mouse") {
+            setTouchRevealedPoint(
+              hitsCurrentReading(
+                  event.currentTarget,
+                  event.clientX,
+                  event.clientY,
+                )
+                ? "current"
+                : null,
+            )
+          }
+        }}
+      >
+        <ComposedChart
+          responsive
+          data={curve}
+          margin={{ top: 32, right: 24, bottom: 8, left: 8 }}
+          style={{ width: "100%", height: "100%" }}
+        >
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis
+            type="number"
+            dataKey="temperature"
+            domain={[xMinimum, xMaximum]}
+            allowDataOverflow
+            height={64}
+            interval="preserveStartEnd"
+            minTickGap={36}
+            tickCount={5}
+            tickLine={false}
+            axisLine={false}
+            tickFormatter={(value: number) => `${value} °C`}
+            label={{
+              value: "Temperature [°C]",
+              position: "insideBottom",
+              offset: 0,
+              fill: "var(--muted-foreground)",
+            }}
+          />
+          <YAxis
+            type="number"
+            dataKey="fanSpeed"
+            domain={[0, yMaximum]}
+            allowDataOverflow
+            width={96}
+            minTickGap={16}
+            tickCount={6}
+            tickLine={false}
+            axisLine={false}
+            tickFormatter={(value: number) => `${value}%`}
+            label={{
+              value: "Fan speed [%]",
+              angle: -90,
+              position: "insideLeft",
+              fill: "var(--muted-foreground)",
+            }}
+          />
+          <Line
+            type="linear"
+            dataKey="fanSpeed"
+            name="curve"
+            stroke="var(--color-curve)"
+            strokeWidth={2}
+            isAnimationActive={false}
+            activeDot={false}
+            dot={false}
+          />
+          {snapshot
+            ? (
+              <CurrentReading
+                temperature={snapshot.temperature}
+                fanSpeed={snapshot.fanSpeed}
+                fanSpeedLabel={fanSpeedLabel}
+                horizontalViewport={horizontalViewport}
+                hovered={hoveredCurrentSample === snapshot.sampledAt}
+                touchRevealed={touchRevealedPoint === "current"}
+              />
+            )
+            : null}
+          {curve.map((point, index) => {
+            const nextPoint = curve[index + 1]
+            const previousPoint = curve[index - 1]
+
+            return (
+              <CurveControlPoint
+                key={point.temperature}
+                point={point}
+                currentReading={snapshot
+                  ? {
+                    temperature: snapshot.temperature,
+                    fanSpeed: snapshot.fanSpeed,
+                    fanSpeedLabel,
+                  }
+                  : null}
+                horizontalViewport={horizontalViewport}
+                disabled={disabled}
+                locked={!nextPoint}
+                touchRevealed={touchRevealedPoint ===
+                  `control-${point.temperature}`}
+                minimum={previousPoint?.fanSpeed ?? fanMin}
+                maximum={nextPoint?.fanSpeed ?? fanMax}
+                onTouchReveal={() =>
+                  setTouchRevealedPoint(`control-${point.temperature}`)}
+                onDrag={(fanSpeed) => updatePoint(index, fanSpeed)}
+                onKeyboardChange={(fanSpeed) => updatePoint(index, fanSpeed)}
+              />
+            )
+          })}
+        </ComposedChart>
+      </ChartContainer>
+    </div>
   )
 }

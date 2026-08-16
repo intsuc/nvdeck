@@ -15,6 +15,39 @@ const TELEMETRY_NUMBER_FORMAT = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 1,
 })
 
+type TelemetryConnectionState =
+  | "connecting"
+  | "live"
+  | "refreshing"
+  | "retrying"
+  | "unavailable"
+
+const TELEMETRY_CONNECTION_COPY: Record<
+  TelemetryConnectionState,
+  { value: string; detail: string }
+> = {
+  connecting: {
+    value: "Connecting…",
+    detail: "Waiting for a current reading.",
+  },
+  live: {
+    value: "Refreshing…",
+    detail: "Waiting for the next current reading.",
+  },
+  refreshing: {
+    value: "Refreshing…",
+    detail: "Updating readings after the dashboard became visible.",
+  },
+  retrying: {
+    value: "Retrying…",
+    detail: "Current readings are temporarily unavailable.",
+  },
+  unavailable: {
+    value: "Unavailable",
+    detail: "Current readings are unavailable.",
+  },
+}
+
 function formatPower(milliwatts: number) {
   return `${TELEMETRY_NUMBER_FORMAT.format(milliwatts / 1_000)} W`
 }
@@ -72,24 +105,39 @@ function PowerRail({
 
   const draw = formatPower(drawMilliwatts)
   const cap = formatPower(capMilliwatts)
+  const scaleMaximum = Math.max(drawMilliwatts, capMilliwatts)
+  const isOverCap = drawMilliwatts > capMilliwatts
+  const overCap = isOverCap ? formatPower(drawMilliwatts - capMilliwatts) : null
+  const valueDescription = overCap === null
+    ? `${describePercentage(percentage)} of cap`
+    : `${overCap} over cap`
 
   return (
     <Meter
       value={drawMilliwatts}
       min={0}
-      max={capMilliwatts}
-      aria-label="Power usage"
-      aria-valuetext={`${draw} power usage, ${cap} cap, ${
-        describePercentage(percentage)
-      } of cap`}
+      max={scaleMaximum}
+      aria-label="Power usage relative to cap"
+      aria-valuetext={`${draw} power usage, ${cap} cap, ${valueDescription}`}
     >
       <MeterTrack marker>
         <MeterIndicator marker />
+        {isOverCap
+          ? (
+            <span
+              aria-hidden="true"
+              className="absolute top-1/2 h-4 w-px -translate-x-1/2 -translate-y-1/2 bg-foreground"
+              style={{ left: `${capMilliwatts / scaleMaximum * 100}%` }}
+            />
+          )
+          : null}
       </MeterTrack>
       <div className="flex items-center justify-between gap-3">
         <CardDescription>0 W</CardDescription>
         <CardDescription className="tabular-nums">
-          {formatPercentage(percentage)} of cap
+          {overCap === null
+            ? `${formatPercentage(percentage)} of cap`
+            : `${overCap} over cap`}
         </CardDescription>
       </div>
     </Meter>
@@ -105,7 +153,7 @@ function PowerCard({ snapshot }: { snapshot: NvmlReadySnapshot }) {
     : null
 
   return (
-    <Card size="sm">
+    <Card size="sm" className="min-h-40">
       <CardHeader>
         <CardTitle role="heading" aria-level={2}>Power</CardTitle>
         <CardDescription>Usage / cap</CardDescription>
@@ -139,7 +187,7 @@ function PowerCard({ snapshot }: { snapshot: NvmlReadySnapshot }) {
 function MemoryCard({ snapshot }: { snapshot: NvmlReadySnapshot }) {
   if (snapshot.memory.status === "unavailable") {
     return (
-      <Card size="sm">
+      <Card size="sm" className="min-h-40">
         <CardHeader>
           <CardTitle role="heading" aria-level={2}>Memory usage</CardTitle>
           <CardDescription>Used / total</CardDescription>
@@ -161,7 +209,7 @@ function MemoryCard({ snapshot }: { snapshot: NvmlReadySnapshot }) {
   const total = formatMemoryBytes(totalBytes)
 
   return (
-    <Card size="sm">
+    <Card size="sm" className="min-h-40">
       <CardHeader>
         <CardTitle role="heading" aria-level={2}>Memory usage</CardTitle>
         <CardDescription>Used / total</CardDescription>
@@ -199,14 +247,58 @@ function MemoryCard({ snapshot }: { snapshot: NvmlReadySnapshot }) {
   )
 }
 
-export function GpuTelemetry({ snapshot }: { snapshot: NvmlReadySnapshot }) {
-  const errors = getTelemetryErrors(snapshot)
+function TelemetryPlaceholderCard({
+  title,
+  relationship,
+  state,
+}: {
+  title: string
+  relationship: string
+  state: TelemetryConnectionState
+}) {
+  const copy = TELEMETRY_CONNECTION_COPY[state]
+
+  return (
+    <Card size="sm" className="min-h-40">
+      <CardHeader>
+        <CardTitle role="heading" aria-level={2}>{title}</CardTitle>
+        <CardDescription>{relationship}</CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-1 flex-col justify-between gap-4">
+        <p className="font-heading text-lg font-medium">{copy.value}</p>
+        <CardDescription>{copy.detail}</CardDescription>
+      </CardContent>
+    </Card>
+  )
+}
+
+export function GpuTelemetry({
+  snapshot,
+  connectionState,
+  stale,
+}: {
+  snapshot: NvmlReadySnapshot | null
+  connectionState: TelemetryConnectionState
+  stale: boolean
+}) {
+  const errors = snapshot === null ? [] : getTelemetryErrors(snapshot)
 
   return (
     <>
+      {snapshot !== null && stale
+        ? (
+          <Alert role="status">
+            <AlertTitle>Last GPU telemetry</AlertTitle>
+            <AlertDescription>
+              These readings are from the last successful sample and are not
+              current.
+            </AlertDescription>
+          </Alert>
+        )
+        : null}
       {errors.length > 0
         ? (
-          <Alert>
+          <Alert role="status">
             <AlertTitle>GPU telemetry partially unavailable</AlertTitle>
             <AlertDescription>
               {errors.map(({ label, message }) => (
@@ -220,10 +312,30 @@ export function GpuTelemetry({ snapshot }: { snapshot: NvmlReadySnapshot }) {
         : null}
       <section
         aria-label="GPU telemetry"
+        aria-busy={snapshot === null && connectionState !== "unavailable"}
         className="grid grid-cols-1 gap-3 sm:grid-cols-2"
       >
-        <PowerCard snapshot={snapshot} />
-        <MemoryCard snapshot={snapshot} />
+        {snapshot === null
+          ? (
+            <>
+              <TelemetryPlaceholderCard
+                title="Power"
+                relationship="Usage / cap"
+                state={connectionState}
+              />
+              <TelemetryPlaceholderCard
+                title="Memory usage"
+                relationship="Used / total"
+                state={connectionState}
+              />
+            </>
+          )
+          : (
+            <>
+              <PowerCard snapshot={snapshot} />
+              <MemoryCard snapshot={snapshot} />
+            </>
+          )}
       </section>
     </>
   )
